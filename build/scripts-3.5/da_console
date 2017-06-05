@@ -1,0 +1,338 @@
+#!C:\Users\prinyap\python3.5.2\python.exe
+# -*- coding: utf-8 -*-
+"""
+An interactive command line console to interact with Directadmin Control Panel
+
+This file is part of python-directadmin.
+
+python-directadmin is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+python-directadmin is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with python-directadmin.  If not, see <http://www.gnu.org/licenses/>.
+
+Author: Andrés Gattinoni
+$Id$
+
+Usage:
+./da_console
+
+To-Do:
+- Add configuration file
+- Add more commands
+"""
+import os
+import sys
+import cmd
+import getpass
+import ConfigParser
+import directadmin
+from optparse import OptionParser
+
+__author__ = "Andrés Gattinoni <andresgattinoni@gmail.com>"
+__version__ = "0.2"
+__revision__ = "$Revision: 26 $"
+__config__ = '~/.daconsole.conf'
+
+
+class DAConsole (cmd.Cmd):
+
+    """Directadmin Console
+
+    Interactive console implementation to interact
+    with Directadmin Control Panel
+    """
+    _username = None
+    _password = None
+    _hostname = None
+    _port = 2222
+    _https = False
+
+    _config_file = None
+    _servers = {}
+
+    _api = None
+    _user_list = []
+
+    _list_items = ['users', 'resellers', 'admins']
+
+    prompt = "> "
+    intro = "=============================\n" \
+            "  DirectAdmin Console v.%s\n" \
+            "=============================\n" \
+            "Type help or ? for help.\n" \
+            "Type quit, Ctrl+D or Ctrl+C to exit" % \
+        __version__
+
+    def __init__(self, api=None, config=None, nested=False):
+        """Constructor
+
+        Instanciates a new Directadmin Console.
+        Adds all the available commands.
+        """
+        cmd.Cmd.__init__(self)
+        self._nested = nested
+        self._parse_config(config)
+        self._api = api
+
+    def onecmd(self, line):
+        """Overloading of the cmd.Cmd.onecmd method
+           to handle API exceptions"""
+        r = False
+        try:
+            r = cmd.Cmd.onecmd(self, line)
+        except directadmin.ApiError, e:
+            print "Error: %s" % str(e)
+            if self._nested:
+                return True
+        return r
+
+    def _parse_config(self, config):
+        """Parses the configuration file"""
+        if config is not None and os.path.isfile(config):
+            self._config_file = config
+            parser = ConfigParser.SafeConfigParser()
+            parser.readfp(open(self._config_file))
+            for section in parser.sections():
+                self._servers[section] = {}
+                for option, value in parser.items(section):
+                    self._servers[section][option] = value
+
+    def _get_api(self, data=None):
+        """Get API
+
+        Returns an instance of Directadmin API.
+        It takes care of asking for connection and login
+        information to the user.
+        """
+        if data is not None:
+            self._api = None
+            self._hostname = None if 'hostname' not in data else data['hostname']
+            self._port = None if 'port' not in data else data['port']
+            self._username = None if 'username' not in data else data['username']
+            self._password = None if 'password' not in data else data['password']
+            self._https = None if 'https' not in data else data['https']
+
+        if self._api is None:
+            # Check hostname and port
+            if self._hostname is None:
+                host = raw_input('Host [localhost]: ')
+                if host == "":
+                    self._hostname = "localhost"
+                else:
+                    self._hostname = host
+
+                port = raw_input('Port [%d]: ' % self._port)
+                try:
+                    port = int(port)
+                except:
+                    port = 0
+                if port > 0:
+                    self._port = port
+
+                https = raw_input('Use HTTPS? (yes/no) [no]: ')
+                self._https = (https.lower() == 'yes')
+
+            # Check username
+            if self._username is None:
+                self._username = raw_input('Username: ')
+
+            # Check password
+            if self._password is None:
+                self._password = getpass.getpass('Password: ')
+
+            # Get the API object
+            self._api = directadmin.Api(self._username,
+                                        self._password,
+                                        self._hostname,
+                                        self._port,
+                                        self._https)
+            # Add the server to the list
+            self._servers[self._hostname] = {'hostname': self._hostname,
+                                             'port': self._port,
+                                             'username': self._username,
+                                             'password': self._password}
+        return self._api
+
+    def help_help(self):
+        """Help information for the help command"""
+        print "Shows help information."
+        print "Usage: ? | help [command]"
+
+    def do_quit(self, s):
+        """Quits the console"""
+        return True
+
+    def do_version(self, args=None):
+        """Prints version information"""
+        print "Directadmin Console, v.%s" % __version__
+
+    def do_config_file(self, s):
+        """Shows the configuration file currently being used"""
+        if self._config_file is None:
+            print "No configuration file found"
+        else:
+            print "Using %s configuration file" % self._config_file
+
+    def do_show_servers(self, server=None):
+        """Shows the list of defined servers"""
+        list = self._servers
+        if server is not None:
+            if server in self._servers:
+                list = self._servers[server]
+        if len(list) == 0:
+            print "There are is no server information configured."
+        else:
+            print "Defined servers:"
+            for name in list:
+                print "* %s (%s@%s:%d)" % \
+                      (name, list[name]['username'],
+                       list[name]['hostname'],
+                       int(list[name]['port']))
+
+    def do_connect(self, server):
+        """Connect to a Directadmin server.
+           Usage: connect [server_name]
+           server_name = a server name defined
+                         on the config file"""
+        data = None
+        if server is not None:
+            if server in self._servers:
+                data = self._servers[server]
+        api = self._get_api(data)
+        cmd = DAConsole(api, nested=True)
+        cmd.prompt = self._hostname.split(".")[0] + "> "
+        cmd.intro = None
+        cmd.cmdloop()
+
+    def complete_connect(self, text, line, begidx, endix):
+        """Complete function for connect command.
+           It completes the parameters based on the servers
+           defined on the configuration file"""
+        if len(self._servers) > 0:
+            return [i for i in self._servers if i.startswith(text)]
+
+    def _complete_users(self, text, line, begidx, endix):
+        """Base method for autocompletion with usernames
+           It works if there's a connection established"""
+        return [i for i in self._get_user_list() if i.startswith(text)]
+
+    def do_suspend(self, username):
+        """Suspends a Directadmin user"""
+        api = self._get_api()
+        if api.suspend_account(username):
+            print "User %s suspended" % username
+        else:
+            print "Failed to suspend user %s" % username
+
+    complete_suspend = _complete_users
+
+    def do_unsuspend(self, username):
+        """Un-suspends a Directadmin user"""
+        api = self._get_api()
+        if api.unsuspend_account(username):
+            print "User %s un-suspended" % username
+        else:
+            print "Failed to un-suspend user %s" % username
+
+    complete_unsuspend = _complete_users
+
+    def _get_user_list(self):
+        """Retrieves and caches the user list of a server
+           if the information is present.
+           Used by _complete_users"""
+        if len(self._user_list) == 0:
+            if self._api is not None:
+                self._user_list = self._api.list_all_users()
+        return self._user_list
+
+    def do_list(self, what=None):
+        """Prints the list of users of a certain type: users, resellers, admins"""
+        if what is None or what == "":
+            print "What do you want to list? (users, resellers or admins)"
+            what = raw_input("? ")
+        if what in self._list_items:
+            api = self._get_api()
+            if what == 'users':
+                list = api.list_users()
+            elif what == 'resellers':
+                list = api.list_resellers()
+            elif what == 'admins':
+                list = api.list_admins()
+            for item in list:
+                print item
+            print "%d %s listed" % (len(list), what)
+        else:
+            print "Can't list '%s'" % what
+
+    def complete_list(self, text, line, begidx, endix):
+        """Complete function for list command"""
+        return [i for i in self._list_items if i.startswith(text)]
+
+    def do_server_info(self, args=None):
+        """Prints some basic server information"""
+        api = self._get_api()
+        info = api.get_server_stats()
+        print "Hostname:\t%s" % self._hostname
+        print "Load average:\t%s" % info['loadavg'][0]
+        print "Bandwidth:\t%d GB" % (long(info['bandwidth'][0]) / 1024)
+        print "RX:\t%s" % info['RX'][0]
+        print "TX:\t%s" % info['TX'][0]
+        print "Quota:\t%d GB" % (long(info['quota'][0]) / 1024)
+        print "Domains:\t%d" % int(info['vdomains'][0])
+        print "Subdomains:\t%d" % int(info['nsubdomains'][0])
+        print "Users:\t%d" % int(info['nusers'][0])
+        print "Resellers:\t%d" % int(info['nresellers'][0])
+        print "Discs information:"
+        print "Filesystem\tBlocks\tAvailable\tUsed\t% used\tMount point"
+        for key in info.keys():
+            if key.startswith('disk'):
+                print "%s\t%s\t%s\t%s\t%s\t%s" % \
+                      (info[key][0]['filesystem'],
+                       info[key][0]['blocks'],
+                       info[key][0]['available'],
+                       info[key][0]['used'],
+                       info[key][0]['usedpercent'],
+                       info[key][0]['mounted'])
+
+    do_EOF = do_quit
+
+
+def get_optparser():
+    """Defines the OptionParser to handle
+       command line configuration options"""
+    parser = OptionParser('%prog [options]',
+                          version='Directadmin Console v.%s' % __version__,
+                          description='Interactive console for the '
+                                      'Directadmin Control Panel')
+    parser.add_option('-c', '--config', dest='config',
+                      help='Set configuration file',
+                      metavar='FILE', default=__config__)
+    return parser
+
+
+def main():
+    """Main
+
+    This is the main function of the program.
+    Handles the main loop and returns an
+    exit status
+    """
+    parser = get_optparser()
+    (option, args) = parser.parse_args()
+    console = DAConsole(config=option.config)
+    try:
+        console.cmdloop()
+    except KeyboardInterrupt:
+        console.do_quit(None)
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
